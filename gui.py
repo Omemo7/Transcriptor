@@ -17,8 +17,8 @@ class TranscriptorQueueApp(ctk.CTk):
         super().__init__()
 
         # --- WINDOW SETUP ---
-        self.title("Jordanian Transcriptor (Batch Queue)")
-        self.geometry("1000x700")
+        self.title("Transcriptor")
+        self.after(0, lambda: self.state('zoomed'))
         self.grid_rowconfigure(1, weight=1) # Scroll area expands
         self.grid_columnconfigure(0, weight=1)
 
@@ -57,6 +57,14 @@ class TranscriptorQueueApp(ctk.CTk):
         
         # Start the background worker
         self.start_worker_thread()
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        try:
+            for file in os.listdir("."):
+                if file.startswith("recovery_") and file.endswith(".txt"):
+                    try:
+                        os.remove(file)
+                    except: pass # Skip if still locked by another instance
+        except: pass
 
     def start_worker_thread(self):
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
@@ -104,6 +112,34 @@ class TranscriptorQueueApp(ctk.CTk):
                     except: pass
             messagebox.showinfo("Success", f"Saved {count} files to {folder}")
 
+
+    def remove_from_list(self, item_to_remove):
+        if item_to_remove in self.items:
+            self.items.remove(item_to_remove)
+
+    # [ADD THIS NEW METHOD]
+    def on_closing(self):
+        """
+        Runs when the user clicks the X button.
+        Stops threads and deletes all temp files.
+        """
+        # 1. Stop any running transcription
+        self.stop_all()
+
+        self.update() 
+        time.sleep(0.1)
+        
+        # 2. Delete recovery files for ALL items in the list
+        for item in self.items:
+            if os.path.exists(item.recovery_file):
+                try:
+                    os.remove(item.recovery_file) # Delete the file
+                except Exception: 
+                    pass # If file is open or locked, just skip it
+
+        # 3. Actually close the window
+        self.destroy()
+        os._exit(0) # Force kill any remaining background threads
     # --- WORKER LOOP (Single Thread for Safety) ---
     # --- WORKER LOOP (Fixed: Locks variable to correct row) ---
     def worker_loop(self):
@@ -160,3 +196,8 @@ class TranscriptorQueueApp(ctk.CTk):
 if __name__ == "__main__":
     app = TranscriptorQueueApp()
     app.mainloop()
+
+
+
+
+

@@ -59,6 +59,11 @@ class MediaItem(ctk.CTkFrame):
                                       command=self.save_text, state="disabled")
         self.btn_save.pack(side="left", padx=2)
 
+        # [ADD THIS CODE] --- Delete Button ---
+        self.btn_delete = ctk.CTkButton(self.btn_frame, text="X", width=30, height=30,
+                                        command=self.delete_item, fg_color="#7f8c8d", hover_color="#95a5a6")
+        self.btn_delete.pack(side="left", padx=2)
+
         self.cancel_flag = False
 
     # --- METHODS THAT WERE MISSING ---
@@ -81,6 +86,7 @@ class MediaItem(ctk.CTkFrame):
             self.btn_stop.configure(state="disabled")
 
     def update_status(self, text, state_code):
+        if not self.winfo_exists(): return # [ADD THIS LINE]
         self.state = state_code
         self.lbl_status.configure(text=text)
         if state_code == "done": self.lbl_status.configure(text_color="#2ecc71")
@@ -98,6 +104,7 @@ class MediaItem(ctk.CTkFrame):
             f.write("")
 
     def on_progress(self, percent, chunk_text):
+        if not self.winfo_exists(): return
         self.progress_bar.set(percent)
         self.lbl_status.configure(text=f"Processing {int(percent*100)}%")
         if chunk_text:
@@ -106,12 +113,20 @@ class MediaItem(ctk.CTkFrame):
     def finish_success(self):
         self.progress_bar.set(1)
         self.update_status("Completed", "done")
-        self.btn_start.configure(state="normal")
+        self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="disabled")
         self.btn_copy.configure(state="normal")
         self.btn_save.configure(state="normal")
 
+    # [REPLACE THE EXISTING finish_stopped WITH THIS]
     def finish_stopped(self):
+        if not self.winfo_exists(): return
+        
+        # Check if we are stopping because we are being deleted
+        if getattr(self, "auto_destroy", False):
+            self.destroy()
+            return
+
         self.update_status("Stopped", "idle")
         self.progress_bar.set(0)
         self.btn_start.configure(state="normal")
@@ -122,16 +137,45 @@ class MediaItem(ctk.CTkFrame):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
 
-    # --- THESE WERE LIKELY MISSING IN YOUR FILE ---
     def copy_text(self):
+        # 1. Verify file exists
         if os.path.exists(self.recovery_file):
             try:
+                # 2. Read and Copy to Clipboard
                 with open(self.recovery_file, "r", encoding="utf-8") as f:
                     text = f.read()
                 self.app.clipboard_clear()
                 self.app.clipboard_append(text)
-                messagebox.showinfo("Copied", f"Text for {self.filename} copied!")
-            except: pass
+                self.app.update() # Keeps clipboard ready
+                
+                # 3. Save Original Button Style (so we can restore it)
+                
+                orig_text = "Copy"
+                orig_color = self.btn_copy.cget("fg_color")
+                orig_hover = self.btn_copy.cget("hover_color")
+
+                # 4. Transform to "Success" State (Green + Check)
+                self.btn_copy.configure(
+                    text="✔ Copied", 
+                    fg_color="#2ecc71",   # Green
+                    hover_color="#27ae60", # Darker Green
+                    text_color="white"
+                )
+
+                # 5. Schedule the Revert (3 seconds later)
+                def revert_style():
+                    if self.winfo_exists(): # Safety check in case item was deleted
+                        self.btn_copy.configure(
+                            text=orig_text, 
+                            fg_color=orig_color, 
+                            hover_color=orig_hover,
+                            text_color=["#DCE4EE", "#DCE4EE"] # Default CTk text color
+                        )
+                
+                self.after(1500, revert_style)
+
+            except Exception as e: 
+                print(f"Copy Failed: {e}")
 
     def save_text(self):
         if not os.path.exists(self.recovery_file): return
@@ -140,3 +184,33 @@ class MediaItem(ctk.CTkFrame):
         if save_path:
             with open(self.recovery_file, "r", encoding="utf-8") as src, open(save_path, "w", encoding="utf-8") as dst:
                 dst.write(src.read())
+
+    # [ADD THIS METHOD]
+    def delete_item(self):
+        """
+        Removes the item.
+        - If processing: Stops it first, hides it, then destroys it when stopped.
+        - If waiting/idle/done: Destroys it immediately.
+        """
+        # 1. Remove from the App's tracking list immediately
+        self.app.remove_from_list(self)
+
+        # 2. Handle Running State
+        if self.state == "processing":
+            self.request_stop()
+            self.auto_destroy = True # Flag: Destroy me once I fully stop
+            self.pack_forget()       # Hide me immediately so I look deleted
+            
+        # 3. Handle Waiting/Idle/Done State
+        else:
+            self.cancel_flag = True # Ensure it doesn't start if it was waiting
+            self.destroy()          # Delete widget immediately
+
+        if os.path.exists(self.recovery_file):
+            try:
+                os.remove(self.recovery_file)
+            except: pass
+            
+        self.app.remove_from_list(self)
+        self.destroy()
+    
