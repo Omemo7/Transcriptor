@@ -6,7 +6,7 @@ import queue
 import transcribe_module
 import time
 from media_item import MediaItem
-
+from duration_handler import get_audio_duration,format_duration
 
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("Dark")
@@ -23,16 +23,59 @@ class TranscriptorQueueApp(ctk.CTk):
         self.grid_rowconfigure(1, weight=1) # Scroll area expands
         self.grid_columnconfigure(0, weight=1)
 
+             # --- VARIABLES ---
+        self.items = [] 
+        self.job_queue = queue.Queue()
+        self.total_duration=0
+        
+
         # --- 1. HEADER ---
         self.header_frame = ctk.CTkFrame(self)
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=10)
 
-        self.btn_add = ctk.CTkButton(self.header_frame, text="+ Add Media Files", 
-                                     command=self.add_files, font=("Arial", 14, "bold"), width=200)
-        self.btn_add.pack(side="left", padx=10, pady=10)
+        # IMPORTANT: Responsiveness Configuration
+        # This tells the frame: "Column 1 (the progress bar) gets all the extra space"
+        self.header_frame.grid_columnconfigure(1, weight=1)
 
-        self.lbl_info = ctk.CTkLabel(self.header_frame, text="Queue: Files process automatically one-by-one.", text_color="gray")
-        self.lbl_info.pack(side="left", padx=10)
+        # 1. Add Button (Fixed width, Left side)
+        self.btn_add = ctk.CTkButton(
+            self.header_frame, 
+            text="+ Add Media Files", 
+            command=self.add_files, 
+            font=("Arial", 13, "bold"), 
+            width=140,
+            height=35
+        )
+        self.btn_add.grid(row=0, column=0, padx=(0, 15), sticky="w")
+
+        # 2. Progress Bar (Flexible width, Middle)
+        self.progress_bar = ctk.CTkProgressBar(self.header_frame, height=12)
+        self.progress_bar.grid(row=0, column=1, sticky="ew", padx=5)
+        self.progress_bar.grid_remove()
+
+        self.progress_bar.set(0) # Start empty
+
+        # 3. Counter Label (e.g., "12/50") - Fixed width, Right of bar
+        self.lbl_progress_count = ctk.CTkLabel(
+            self.header_frame, 
+            text="", 
+            font=("Arial", 12, "bold"),
+            text_color=("gray10", "gray90") # Adaptive color for light/dark mode
+        )
+        self.lbl_progress_count.grid(row=0, column=2, padx=(5, 15))
+
+        # 4. Total Duration Label (Fixed width, Far Right)
+        # Assuming you have a format_duration function defined elsewhere
+        formatted_time = format_duration(self.total_duration)
+        self.lbl_total_duration = ctk.CTkLabel(
+            self.header_frame, 
+            text=f'Total: {formatted_time}', 
+            text_color="gray", 
+            font=("Arial", 12)
+        )
+        self.lbl_total_duration.grid(row=0, column=3, sticky="e",padx=20)
+
+
 
         # --- 2. SCROLLABLE QUEUE AREA ---
         self.scroll_area = ctk.CTkScrollableFrame(self, label_text="Transcription Queue")
@@ -52,10 +95,7 @@ class TranscriptorQueueApp(ctk.CTk):
         self.btn_start_all = ctk.CTkButton(self.footer, text="Start All Pending", command=self.start_all_pending, fg_color="green")
         self.btn_start_all.pack(side="right", padx=10)
 
-        # --- VARIABLES ---
-        self.items = [] 
-        self.job_queue = queue.Queue()
-        
+   
         # Start the background worker
         self.start_worker_thread()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -71,12 +111,25 @@ class TranscriptorQueueApp(ctk.CTk):
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker_thread.start()
 
+
+
+
+    def update_total_duration_label(self):
+        self.lbl_total_duration.configure(text=f'Total Duration: {format_duration(self.total_duration)}')
+
+    
     def add_files(self):
         file_paths = filedialog.askopenfilenames(filetypes=[("Media Files", "*.mp3 *.mp4 *.wav *.m4a *.mkv")])
         for path in file_paths:
-            item = MediaItem(self.scroll_area, path, self)
+            item = MediaItem(self.scroll_area, path, self,on_delete_click=self.delete_item)
             item.pack(fill="x", pady=2, padx=5)
             self.items.append(item)
+            self.total_duration=self.total_duration+item.durationInSeconds
+            self.update_total_duration_label()
+            self.progress_bar.grid()
+            self.update_total_progress()
+
+            
 
     # --- QUEUE MANAGEMENT ---
     def add_to_queue(self, media_item):
@@ -114,6 +167,41 @@ class TranscriptorQueueApp(ctk.CTk):
             messagebox.showinfo("Success", f"Saved {count} files to {folder}")
 
 
+
+    def delete_item(self, item_to_remove):
+        """
+        Removes the item.
+        """
+        if item_to_remove in self.items:
+            self.total_duration=self.total_duration-item_to_remove.durationInSeconds
+            self.update_total_duration_label()
+            self.items.remove(item_to_remove)
+            item_to_remove.pack_forget() # Hide immediately so it looks deleted
+            
+
+        # 2. Handle Running State (The "After" Logic)
+        if item_to_remove.state == "processing":
+            item_to_remove.request_stop()
+            # CHECK AGAIN in 100ms. Do not fall through to delete yet.
+            # This loops until state changes to 'idle'/'done'.
+            item_to_remove.after(100, lambda: self.delete_item(item_to_remove))
+            return 
+
+        # 3. Handle Waiting/Idle/Done State
+        # We only reach here if state is NOT processing (safe to delete)
+        item_to_remove.cancel_flag = True
+
+        if os.path.exists(item_to_remove.recovery_file):
+            try:
+                os.remove(item_to_remove.recovery_file)
+                print('deleted')
+            except Exception as e:
+                print(f"Failed to delete: {e}")
+        
+        item_to_remove.destroy()
+        self.after(0, self.update_total_progress)
+
+
     def remove_from_list(self, item_to_remove):
         if item_to_remove in self.items:
             self.items.remove(item_to_remove)
@@ -143,18 +231,34 @@ class TranscriptorQueueApp(ctk.CTk):
         os._exit(0) # Force kill any remaining background threads
     # --- WORKER LOOP (Single Thread for Safety) ---
     # --- WORKER LOOP (Fixed: Locks variable to correct row) ---
+
+
+    def update_total_progress(self):
+        totalCount=len(self.items)
+        if totalCount==0: 
+            self.lbl_progress_count.configure(text="")
+            self.progress_bar.grid_remove()
+            return
+        doneCount=sum([1 for x in self.items if x.state=="done"])
+        percentage=doneCount/totalCount
+        self.progress_bar.set(percentage)
+        self.lbl_progress_count.configure(text=f"{doneCount}/{totalCount}")
+
+
+    class UserCancelled(Exception): 
+        pass
+
     def worker_loop(self):
         while True:
             try:
+                
                 # 1. Get next job
                 current_item = self.job_queue.get()
                 
-                # FIX: We use 'target=current_item' in the lambda.
-                # This freezes the variable so the GUI updates the CORRECT row,
-                # even if the worker has already moved to the next file.
-
+                # ... (your existing setup code) ...
+                
                 if current_item.cancel_flag:
-                    self.after(0, lambda target=current_item: target.finish_stopped())
+                    # ... (your existing skip logic) ...
                     self.job_queue.task_done()
                     continue
 
@@ -163,15 +267,21 @@ class TranscriptorQueueApp(ctk.CTk):
                 try:
                     with open(current_item.recovery_file, "a", encoding="utf-8") as f:
                         
+                        # --- CHANGE 1: Force stop in on_progress ---
                         def on_progress(percent, chunk_text):
+                            if current_item.cancel_flag:
+                                raise self.UserCancelled()  # <--- CRITICAL: Abort immediately!
+                                
                             if chunk_text:
                                 f.write(chunk_text + " ")
                                 f.flush()
-                            # FIX: Capture 'target' here too
                             self.after(0, lambda target=current_item: target.on_progress(percent, chunk_text))
                         
+                        # --- CHANGE 2: Force stop in check_cancel ---
                         def check_cancel(): 
-                            return current_item.cancel_flag
+                            if current_item.cancel_flag:
+                                raise self.UserCancelled()  # <--- CRITICAL: Abort immediately!
+                            return False
 
                         transcribe_module.run_transcription(
                             current_item.file_path,
@@ -179,16 +289,23 @@ class TranscriptorQueueApp(ctk.CTk):
                             check_cancel=check_cancel
                         )
                     
-                    if current_item.cancel_flag:
-                        self.after(0, lambda target=current_item: target.finish_stopped())
-                    else:
-                        # FIX: Capture 'target'. This prevents the "Stuck at 100%" bug!
-                        self.after(0, lambda target=current_item: target.finish_success())
-                
+                    # If we get here, it finished successfully
+                    self.after(0, lambda target=current_item: target.finish_success())
+                    self.after(0, self.update_total_progress)
+
+                # --- CHANGE 3: Catch the forced stop ---
+                except self.UserCancelled:
+                    # This block runs INSTANTLY when you raise the exception above
+                    self.after(0, lambda target=current_item: target.finish_stopped())
+
                 except Exception as e:
+                    # This handles actual errors
                     self.after(0, lambda target=current_item: target.finish_error(str(e)))
 
                 self.job_queue.task_done()
+                
+
+                
             
             except Exception as e:
                 print(f"Queue Error: {e}")

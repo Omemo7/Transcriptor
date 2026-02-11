@@ -5,20 +5,21 @@ import os
 import queue
 import time
 import transcribe_module
-
+from duration_handler import get_audio_duration,format_duration
 
 class MediaItem(ctk.CTkFrame):
     """
     Represents a single row in the scrollable list.
     """
-    def __init__(self, parent, file_path, app_manager):
+    def __init__(self, parent, file_path, app_manager,on_delete_click=None):
         super().__init__(parent)
         self.app = app_manager
         self.file_path = file_path
+        self.on_delete_click=on_delete_click
         self.filename = os.path.basename(file_path)
         self.transcription_text = ""
         self.state = "idle"  # idle, waiting, processing, done, error, stopped
-        
+        self.durationInSeconds=get_audio_duration(self.file_path)
         # Create a unique recovery filename
         safe_name = "".join([c for c in self.filename if c.isalpha() or c.isdigit() or c==' ']).rstrip()
         self.recovery_file = f"recovery_{safe_name}.txt"
@@ -29,10 +30,15 @@ class MediaItem(ctk.CTkFrame):
         # 1. Filename
         self.lbl_name = ctk.CTkLabel(self, text=self.filename, anchor="w", font=("Arial", 12, "bold"))
         self.lbl_name.grid(row=0, column=0, columnspan=2, padx=10, pady=(5,0), sticky="ew")
-
+        
+        
+        self.lbl_duration = ctk.CTkLabel(self, text=format_duration(self.durationInSeconds), text_color="gray", font=("Arial", 11))
+        self.lbl_duration.grid(row=2, column=0, padx=15, pady=1, sticky="w") 
+    
         # 2. Status
         self.lbl_status = ctk.CTkLabel(self, text="Idle", text_color="gray", font=("Arial", 11))
         self.lbl_status.grid(row=0, column=2, padx=10, pady=(5,0), sticky="e")
+
 
         # 3. Progress Bar
         self.progress_bar = ctk.CTkProgressBar(self, height=8)
@@ -61,11 +67,17 @@ class MediaItem(ctk.CTkFrame):
 
         # [ADD THIS CODE] --- Delete Button ---
         self.btn_delete = ctk.CTkButton(self.btn_frame, text="X", width=30, height=30,
-                                        command=self.delete_item, fg_color="#7f8c8d", hover_color="#95a5a6")
+                                        command=self._handle_delete_click, fg_color="#7f8c8d", hover_color="#95a5a6")
         self.btn_delete.pack(side="left", padx=2)
 
         self.cancel_flag = False
 
+
+    def _handle_delete_click(self):
+        if self.on_delete_click:
+            self.on_delete_click(self)
+
+    
     # --- METHODS THAT WERE MISSING ---
     def request_start(self):
         if self.state in ["processing", "waiting"]: return
@@ -78,11 +90,15 @@ class MediaItem(ctk.CTkFrame):
     def request_stop(self):
         self.cancel_flag = True
         if self.state == "waiting":
-            self.update_status("Cancelled", "idle")
+            # Safe to stop immediately because no thread is running
+            self.update_status("Cancelled", "idle") 
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
+            
         elif self.state == "processing":
-            self.update_status("Stopping...", "stopped")
+            # DO NOT set state to "stopped" here!
+            # Set it to "stopping" so delete_item knows to keep waiting.
+            self.update_status("Stopping...", "stopping") 
             self.btn_stop.configure(state="disabled")
 
     def update_status(self, text, state_code):
@@ -122,12 +138,11 @@ class MediaItem(ctk.CTkFrame):
     def finish_stopped(self):
         if not self.winfo_exists(): return
         
-        # Check if we are stopping because we are being deleted
-        if getattr(self, "auto_destroy", False):
-            self.destroy()
-            return
+        # REMOVED: if getattr(self, "auto_destroy", False): ...
+        # REASON: The delete_item loop is waiting for us to become "idle".
+        # If we destroy ourselves here, the loop will crash trying to find us.
 
-        self.update_status("Stopped", "idle")
+        self.update_status("Stopped", "idle")  # This signals delete_item it can proceed!
         self.progress_bar.set(0)
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
@@ -185,32 +200,5 @@ class MediaItem(ctk.CTkFrame):
             with open(self.recovery_file, "r", encoding="utf-8") as src, open(save_path, "w", encoding="utf-8") as dst:
                 dst.write(src.read())
 
-    # [ADD THIS METHOD]
-    def delete_item(self):
-        """
-        Removes the item.
-        - If processing: Stops it first, hides it, then destroys it when stopped.
-        - If waiting/idle/done: Destroys it immediately.
-        """
-        # 1. Remove from the App's tracking list immediately
-        self.app.remove_from_list(self)
-
-        # 2. Handle Running State
-        if self.state == "processing":
-            self.request_stop()
-            self.auto_destroy = True # Flag: Destroy me once I fully stop
-            self.pack_forget()       # Hide me immediately so I look deleted
-            
-        # 3. Handle Waiting/Idle/Done State
-        else:
-            self.cancel_flag = True # Ensure it doesn't start if it was waiting
-            self.destroy()          # Delete widget immediately
-
-        if os.path.exists(self.recovery_file):
-            try:
-                os.remove(self.recovery_file)
-            except: pass
-            
-        self.app.remove_from_list(self)
-        self.destroy()
+    
     
