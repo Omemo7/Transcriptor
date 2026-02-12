@@ -105,7 +105,7 @@ class TranscriptorQueueApp(ctk.CTk):
         # Start the background worker
         self.start_worker_thread()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        
+     
 
     def start_worker_thread(self):
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)

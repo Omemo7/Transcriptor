@@ -69,7 +69,7 @@ class MediaItem(ctk.CTkFrame):
     self.btn_frame, 
     text="👁",           # The Eye Icon
     width=40,            # Make it square/small
-    font=("Arial", 20), state="disabled"
+    font=("Arial", 20), state="disabled", command=self.open_scrollable_window
 )
         self.btn_view.pack(padx=2,side="left")
 
@@ -88,6 +88,35 @@ class MediaItem(ctk.CTkFrame):
 
         self.cancel_flag = False
 
+
+
+ 
+
+    def open_scrollable_window(self):
+        # 1. Create the window
+        new_window = ctk.CTkToplevel(self.app)
+        new_window.title(getattr(self, 'filename', 'Recovery Window')) # Safe fallback if filename isn't set
+        new_window.geometry("400x300")
+        
+        # 2. Setup Modal behavior (keep it on top)
+        new_window.transient(self.app)
+        new_window.grab_set()
+        
+        # 3. Create widgets and load data (MUST happen before wait_window)
+        textbox = ctk.CTkTextbox(master=new_window, width=350, height=250)
+        textbox.pack(pady=20, padx=20, fill="both", expand=True)
+
+
+        textbox.insert("0.0", self.transcription_text)
+        # 2. Configure a tag for Right Alignment
+        textbox.tag_config("right_align", justify="right")
+
+        # 3. APPLY the tag to the entire content ("0.0" to "end")
+        textbox.tag_add("right_align", "0.0", "end")
+        # 4. NOW wait for the window to close
+        # This pauses the main app until new_window is destroyed.
+        self.app.wait_window(new_window)
+        
 
     def _handle_delete_click(self):
         if self.on_delete_click:
@@ -148,6 +177,8 @@ class MediaItem(ctk.CTkFrame):
         self.update_status("Completed", "done")
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="disabled")
+
+        self.btn_view.configure(state="normal")
         self.btn_copy.configure(state="normal")
         self.btn_save.configure(state="normal")
 
