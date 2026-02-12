@@ -19,4 +19,4 @@ pyinstaller --noconfirm --onedir --windowed --name "Transcriber" `
  --exclude-module "matplotlib" `
  --hidden-import="sklearn.utils._typedefs" `
  --hidden-import="sklearn.neighbors._partition_nodes" `
- gui.py
+ main.py

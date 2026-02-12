@@ -6,7 +6,9 @@ import queue
 import transcribe_module
 import time
 from media_item import MediaItem
-from duration_handler import get_audio_duration,format_duration
+
+import global_vars
+from util import Util
 
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("Dark")
@@ -16,10 +18,14 @@ class TranscriptorQueueApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+       
+        os.makedirs(global_vars.rec_folder, exist_ok=True)
+
         # --- WINDOW SETUP ---
         self.title("Transcriptor")
         self.iconbitmap("icon.ico")
         self.after(0, lambda: self.state('zoomed'))
+        self.minsize(600, 400)
         self.grid_rowconfigure(1, weight=1) # Scroll area expands
         self.grid_columnconfigure(0, weight=1)
 
@@ -66,7 +72,7 @@ class TranscriptorQueueApp(ctk.CTk):
 
         # 4. Total Duration Label (Fixed width, Far Right)
         # Assuming you have a format_duration function defined elsewhere
-        formatted_time = format_duration(self.total_duration)
+        formatted_time = Util.format_duration(self.total_duration)
         self.lbl_total_duration = ctk.CTkLabel(
             self.header_frame, 
             text=f'Total: {formatted_time}', 
@@ -99,13 +105,7 @@ class TranscriptorQueueApp(ctk.CTk):
         # Start the background worker
         self.start_worker_thread()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        try:
-            for file in os.listdir("."):
-                if file.startswith("recovery_") and file.endswith(".txt"):
-                    try:
-                        os.remove(file)
-                    except: pass # Skip if still locked by another instance
-        except: pass
+        
 
     def start_worker_thread(self):
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
@@ -115,7 +115,7 @@ class TranscriptorQueueApp(ctk.CTk):
 
 
     def update_total_duration_label(self):
-        self.lbl_total_duration.configure(text=f'Total Duration: {format_duration(self.total_duration)}')
+        self.lbl_total_duration.configure(text=f'Total Duration: {Util.format_duration(self.total_duration)}')
 
     
     def add_files(self):
@@ -177,60 +177,46 @@ class TranscriptorQueueApp(ctk.CTk):
             self.update_total_duration_label()
             self.items.remove(item_to_remove)
             item_to_remove.pack_forget() # Hide immediately so it looks deleted
-            
-
-        # 2. Handle Running State (The "After" Logic)
-        if item_to_remove.state == "processing":
             item_to_remove.request_stop()
-            # CHECK AGAIN in 100ms. Do not fall through to delete yet.
-            # This loops until state changes to 'idle'/'done'.
-            item_to_remove.after(100, lambda: self.delete_item(item_to_remove))
-            return 
+            self.after(0, self.update_total_progress)
+        else: print("item is not found in items")
 
-        # 3. Handle Waiting/Idle/Done State
-        # We only reach here if state is NOT processing (safe to delete)
-        item_to_remove.cancel_flag = True
-
-        if os.path.exists(item_to_remove.recovery_file):
+    def delete_recovery_file(self,item):
+        if os.path.exists(item.recovery_file):
             try:
-                os.remove(item_to_remove.recovery_file)
+                os.remove(item.recovery_file)
                 print('deleted')
             except Exception as e:
                 print(f"Failed to delete: {e}")
-        
-        item_to_remove.destroy()
-        self.after(0, self.update_total_progress)
-
+        item.destroy()
 
     def remove_from_list(self, item_to_remove):
         if item_to_remove in self.items:
             self.items.remove(item_to_remove)
 
     # [ADD THIS NEW METHOD]
+    
+
+
+
+
     def on_closing(self):
-        """
-        Runs when the user clicks the X button.
-        Stops threads and deletes all temp files.
-        """
-        # 1. Stop any running transcription
+        # 1. Stop threads
         self.stop_all()
-
-        self.update() 
-        time.sleep(0.1)
         
-        # 2. Delete recovery files for ALL items in the list
-        for item in self.items:
-            if os.path.exists(item.recovery_file):
-                try:
-                    os.remove(item.recovery_file) # Delete the file
-                except Exception: 
-                    pass # If file is open or locked, just skip it
+        # 2. Update UI briefly to let threads react
+        # (This pumps the message loop so workers can receive the stop signal)
+        start = time.time()
+        while time.time() - start < 0.5:
+            self.update()
+            time.sleep(0.05)
 
-        # 3. Actually close the window
+        # 3. Nuke the folder (Retries for 2 seconds: 20 attempts * 0.1s)
+        Util.force_delete_folder(global_vars.rec_folder, max_retries=20, delay=0.1)
+
+        # 4. Exit
         self.destroy()
-        os._exit(0) # Force kill any remaining background threads
-    # --- WORKER LOOP (Single Thread for Safety) ---
-    # --- WORKER LOOP (Fixed: Locks variable to correct row) ---
+        os._exit(0)
 
 
     def update_total_progress(self):
@@ -265,7 +251,7 @@ class TranscriptorQueueApp(ctk.CTk):
                 self.after(0, lambda target=current_item: target.update_status("Processing...", "processing"))
 
                 try:
-                    with open(current_item.recovery_file, "a", encoding="utf-8") as f:
+                    with open(current_item.recovery_file, "w", encoding="utf-8") as f:
                         
                         # --- CHANGE 1: Force stop in on_progress ---
                         def on_progress(percent, chunk_text):
@@ -296,17 +282,15 @@ class TranscriptorQueueApp(ctk.CTk):
                 # --- CHANGE 3: Catch the forced stop ---
                 except self.UserCancelled:
                     # This block runs INSTANTLY when you raise the exception above
+                    self.delete_recovery_file(current_item)
                     self.after(0, lambda target=current_item: target.finish_stopped())
 
                 except Exception as e:
+                    self.delete_recovery_file(current_item)
                     # This handles actual errors
                     self.after(0, lambda target=current_item: target.finish_error(str(e)))
 
                 self.job_queue.task_done()
-                
-
-                
-            
             except Exception as e:
                 print(f"Queue Error: {e}")
                 time.sleep(1)
