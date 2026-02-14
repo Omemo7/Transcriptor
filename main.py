@@ -23,7 +23,7 @@ class TranscriptorQueueApp(ctk.CTk):
 
         # --- WINDOW SETUP ---
         self.title("Transcriptor")
-        self.iconbitmap("icon.ico")
+        self.iconbitmap(Util.resource_path("icon.ico"))
         self.after(0, lambda: self.state('zoomed'))
         self.minsize(600, 400)
         self.grid_rowconfigure(1, weight=1) # Scroll area expands

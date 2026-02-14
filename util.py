@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 import stat
+import sys
 
 
 class Util():
@@ -51,6 +52,19 @@ class Util():
             return f"{h:d}:{m:02d}:{s:02d}"
         return f"{m:02d}:{s:02d}"
     
+
+ 
+    @staticmethod
+    def resource_path(relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
+            base_path = sys._MEIPASS
+        except Exception:
+            # If not running as an exe, use the current script directory
+            base_path = os.path.abspath(".")
+
+        return os.path.join(base_path, relative_path)
     @staticmethod
     def force_delete_folder(folder_path, max_retries=10, delay=0.1):
         """
