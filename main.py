@@ -6,7 +6,7 @@ import queue
 import transcribe_module
 import time
 from media_item import MediaItem
-
+from stopwatch import StopWatchLabel
 import global_vars
 from util import Util
 
@@ -69,6 +69,8 @@ class TranscriptorQueueApp(ctk.CTk):
             text_color=("gray10", "gray90") # Adaptive color for light/dark mode
         )
         self.lbl_progress_count.grid(row=0, column=2, padx=(5, 15))
+        
+        
 
         # 4. Total Duration Label (Fixed width, Far Right)
         # Assuming you have a format_duration function defined elsewhere
@@ -100,6 +102,7 @@ class TranscriptorQueueApp(ctk.CTk):
 
         self.btn_start_all = ctk.CTkButton(self.footer, text="Start All Pending", command=self.start_all_pending, fg_color="green")
         self.btn_start_all.pack(side="right", padx=10)
+
 
    
         # Start the background worker
@@ -138,7 +141,7 @@ class TranscriptorQueueApp(ctk.CTk):
     def start_all_pending(self):
         for item in self.items:
             if item.state in ["idle", "stopped", "error"]:
-                item.request_start()
+                item.request_start() 
 
     def stop_all(self):
         # Mark all items to stop
@@ -178,6 +181,7 @@ class TranscriptorQueueApp(ctk.CTk):
             self.items.remove(item_to_remove)
             item_to_remove.pack_forget() # Hide immediately so it looks deleted
             item_to_remove.request_stop()
+            item_to_remove.destroy()
             self.after(0, self.update_total_progress)
         else: print("item is not found in items")
 
@@ -188,36 +192,75 @@ class TranscriptorQueueApp(ctk.CTk):
                 print('deleted')
             except Exception as e:
                 print(f"Failed to delete: {e}")
-        item.destroy()
 
     def remove_from_list(self, item_to_remove):
         if item_to_remove in self.items:
             self.items.remove(item_to_remove)
 
     # [ADD THIS NEW METHOD]
-    
-
-
-
 
     def on_closing(self):
+        """Entry point when the user clicks X."""
+        
+        # 1. Disable the main window so they can't click things twice
+        self.attributes("-disabled", True) 
+
+        # 2. Show the "Wrapping up" message overlay
+        self.show_closing_dialog()
+
+        # 3. Start the heavy lifting in a NEW thread
+        #    (This keeps the UI responsive so the message renders)
+        threading.Thread(target=self._run_shutdown_tasks, daemon=True).start()
+    def show_closing_dialog(self):
+        """Creates a simple, borderless message centered on the app."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("")
+        dialog.overrideredirect(True) # Removes the title bar/X button
+        dialog.attributes("-topmost", True)
+        
+        # Dimensions
+        w, h = 300, 120
+        
+        # Center logic
+        x = self.winfo_x() + (self.winfo_width() // 2) - (w // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (h // 2)
+        dialog.geometry(f"{w}x{h}+{x}+{y}")
+        
+        # Styling - Matches your "not a loading ring" request
+        # Just a clean message telling them what is happening
+        frame = ctk.CTkFrame(dialog, corner_radius=10)
+        frame.pack(fill="both", expand=True)
+        
+        label_title = ctk.CTkLabel(frame, text="Closing Application", font=("Arial", 16, "bold"))
+        label_title.pack(pady=(20, 5))
+        
+        label_status = ctk.CTkLabel(frame, text="Cleaning up temporary files...", font=("Arial", 12))
+        label_status.pack(pady=5)
+    def _run_shutdown_tasks(self):
+        """Background thread: Handles logic that was previously freezing the UI."""
+        
+        # --- YOUR LOGIC ADAPTED FOR THREADING ---
+        
         # 1. Stop threads
         self.stop_all()
         
-        # 2. Update UI briefly to let threads react
-        # (This pumps the message loop so workers can receive the stop signal)
-        start = time.time()
-        while time.time() - start < 0.5:
-            self.update()
-            time.sleep(0.05)
+        # 2. Give threads time to react
+        #    NOTE: We replaced your 'self.update()' loop with a simple sleep.
+        #    Since this is a background thread, the Main UI thread is already 
+        #    running free, so we don't need to manually pump it with update().
+        time.sleep(0.5) 
 
-        # 3. Nuke the folder (Retries for 2 seconds: 20 attempts * 0.1s)
+        # 3. Nuke the folder (This was the main cause of the lag)
+        #    Now it runs in the background while the UI says "Wrapping up"
         Util.force_delete_folder(global_vars.rec_folder, max_retries=20, delay=0.1)
 
-        # 4. Exit
+        # 4. Trigger the actual exit on the main thread
+        self.after(0, self._complete_exit)
+
+    def _complete_exit(self):
+        """Final step: actually kill the app."""
         self.destroy()
         os._exit(0)
-
 
     def update_total_progress(self):
         totalCount=len(self.items)
@@ -249,6 +292,7 @@ class TranscriptorQueueApp(ctk.CTk):
                     continue
 
                 self.after(0, lambda target=current_item: target.update_status("Processing...", "processing"))
+                current_item.lbl_stopwatch.start()
 
                 try:
                     with open(current_item.recovery_file, "w", encoding="utf-8") as f:
@@ -282,6 +326,7 @@ class TranscriptorQueueApp(ctk.CTk):
                 # --- CHANGE 3: Catch the forced stop ---
                 except self.UserCancelled:
                     # This block runs INSTANTLY when you raise the exception above
+                    
                     self.delete_recovery_file(current_item)
                     self.after(0, lambda target=current_item: target.finish_stopped())
 
@@ -289,8 +334,10 @@ class TranscriptorQueueApp(ctk.CTk):
                     self.delete_recovery_file(current_item)
                     # This handles actual errors
                     self.after(0, lambda target=current_item: target.finish_error(str(e)))
+                    current_item.destroy()
 
                 self.job_queue.task_done()
+                current_item.lbl_stopwatch.stop()
             except Exception as e:
                 print(f"Queue Error: {e}")
                 time.sleep(1)

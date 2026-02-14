@@ -7,6 +7,11 @@ import time
 import transcribe_module
 from util import Util
 import global_vars
+import textwrap
+import arabic_reshaper
+from bidi.algorithm import get_display
+import tempfile
+from stopwatch import StopWatchLabel
 
 class MediaItem(ctk.CTkFrame):
     """
@@ -47,6 +52,10 @@ class MediaItem(ctk.CTkFrame):
         self.lbl_status = ctk.CTkLabel(self, text="Idle", text_color="gray", font=("Arial", 11))
         self.lbl_status.grid(row=0, column=2, padx=10, pady=(5,0), sticky="e")
 
+        
+        self.lbl_stopwatch=StopWatchLabel(self)
+        self.lbl_stopwatch.grid(row=2, column=2, padx=10, sticky="e")
+
 
         # 3. Progress Bar
         self.progress_bar = ctk.CTkProgressBar(self, height=8)
@@ -55,7 +64,7 @@ class MediaItem(ctk.CTkFrame):
 
         # 4. Buttons
         self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.btn_frame.grid(row=0, column=3, rowspan=2, padx=5, pady=5, sticky="e")
+        self.btn_frame.grid(row=0, column=3, rowspan=3, padx=5, pady=5, sticky="e")
 
         self.btn_start = ctk.CTkButton(self.btn_frame, text="▶", width=30, height=30, 
                                        command=self.request_start, fg_color="green")
@@ -69,7 +78,7 @@ class MediaItem(ctk.CTkFrame):
     self.btn_frame, 
     text="👁",           # The Eye Icon
     width=40,            # Make it square/small
-    font=("Arial", 20), state="disabled", command=self.open_scrollable_window
+    font=("Arial", 20), state="disabled", command=self.open_in_word_rtl
 )
         self.btn_view.pack(padx=2,side="left")
 
@@ -92,31 +101,48 @@ class MediaItem(ctk.CTkFrame):
 
  
 
-    def open_scrollable_window(self):
-        # 1. Create the window
-        new_window = ctk.CTkToplevel(self.app)
-        new_window.title(getattr(self, 'filename', 'Recovery Window')) # Safe fallback if filename isn't set
-        new_window.geometry("400x300")
-        
-        # 2. Setup Modal behavior (keep it on top)
-        new_window.transient(self.app)
-        new_window.grab_set()
-        
-        # 3. Create widgets and load data (MUST happen before wait_window)
-        textbox = ctk.CTkTextbox(master=new_window, width=350, height=250)
-        textbox.pack(pady=20, padx=20, fill="both", expand=True)
 
+    def open_in_word_rtl(self):
+    # 1. Prepare RTF Header for Arabic (RTL) Support
+    # \rtf1 = RTF format
+    # \ansi = Character set
+    # \deflang1025 = Arabic (Saudi Arabia) default language ID
+        header = r"{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1025" \
+                r"{\fonttbl{\f0\fnil\fcharset178 Arial;}}" \
+                r"\viewkind4\uc1"
 
-        textbox.insert("0.0", self.transcription_text)
-        # 2. Configure a tag for Right Alignment
-        textbox.tag_config("right_align", justify="right")
+        # 2. Configure Paragraph: RTL Direction + Right Alignment
+        # \pard = Reset paragraph
+        # \rtlpar = Right-to-Left Direction (Critical for Arabic)
+        # \qr = Right Align
+        # \f0\fs32 = Arial Font, Size 16
+        formatting = r"\pard\sa200\sl276\slmult1\rtlpar\qr\lang1025\f0\fs32 "
 
-        # 3. APPLY the tag to the entire content ("0.0" to "end")
-        textbox.tag_add("right_align", "0.0", "end")
-        # 4. NOW wait for the window to close
-        # This pauses the main app until new_window is destroyed.
-        self.app.wait_window(new_window)
-        
+        # 3. Encode Text to RTF-safe format
+        # This loop ensures every Arabic character is readable by Word
+        safe_text = ""
+        for char in self.transcription_text:
+            code = ord(char)
+            if code > 127:
+                safe_text += f"\\u{code}?" # Unicode escape
+            elif char == "\n":
+                safe_text += "\\par "      # New line
+            elif char in ["{", "}", "\\"]:
+                safe_text += "\\" + char   # Escape special chars
+            else:
+                safe_text += char
+
+        # 4. Combine parts
+        full_content = header + formatting + safe_text + "}"
+
+        # 5. Create a standard Temporary File (Invisible to your project)
+        # This creates a file in C:\Users\You\AppData\Local\Temp\...
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.rtf', encoding='utf-8') as temp:
+            temp.write(full_content)
+            temp_path = temp.name
+
+        # 6. Open immediately in Word
+        os.startfile(temp_path)
 
     def _handle_delete_click(self):
         if self.on_delete_click:
@@ -146,6 +172,9 @@ class MediaItem(ctk.CTkFrame):
             # Set it to "stopping" so delete_item knows to keep waiting.
             self.update_status("Stopping...", "stopping") 
             self.btn_stop.configure(state="disabled")
+
+        self.lbl_stopwatch.stopAndReset()
+        
 
         
     def update_status(self, text, state_code):
